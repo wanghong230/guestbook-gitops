@@ -1,20 +1,24 @@
-# Reusable promotion task: rewrites the image tag in the Kustomize overlay for
-# the current Stage, validates the rendered manifests against the Kyverno
-# replica-cap policy, commits, pushes, and asks Argo CD to sync the matching
-# Application. Each Stage's promotionTemplate just references this task, so the
-# step list lives in one place.
+# Reusable promotion task for the guestbook app:
+#
+#   git-clone
+#     → kustomize-set-image            (rewrite the overlay's image tag)
+#     → kustomize-build                (render manifests for inspection)
+#     → kyverno-validate               (replica-cap policy gate)
+#     → tf-apply (release-marker)      (real OpenTofu run, no cloud creds yet)
+#     → tf-output                      (capture release_id for downstream use)
+#     → git-commit
+#     → git-push
+#     → argocd-update
 #
 # `${{ ctx.stage }}` resolves to the name of the Stage that's invoking the
-# task (e.g. "dev", "staging", "prod"), which we use to pick the overlay
-# directory and the Argo CD Application name.
+# task ("dev", "staging", "prod"), driving the overlay path, the policy
+# scoping, and the Argo CD Application name.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: PromotionTask
 metadata:
   name: kustomize-promote
   namespace: guestbook
 spec:
-  # Defaults make these optional at the call site. Override per-Stage by
-  # passing `vars` on the task step if you ever need to.
   vars:
     - name: gitRepo
       value: https://github.com/wanghong230/guestbook-gitops.git
@@ -24,6 +28,8 @@ spec:
       value: main
     - name: policyPath
       value: ./src/policies/guestbook-max-replicas.yaml
+    - name: tfDir
+      value: ./src/terraform/release-marker
   steps:
     - uses: git-clone
       config:
@@ -31,34 +37,64 @@ spec:
         checkout:
           - branch: ${{ vars.branch }}
             path: ./src
+
     - uses: kustomize-set-image
       as: update-image
       config:
         path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
         images:
           - image: ${{ vars.imageRepo }}
+
     # Render the overlay so we have concrete YAML for Kyverno to inspect.
     - uses: kustomize-build
       config:
         path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
         outPath: ./rendered.yaml
+
     # Fail the promotion if the rendered manifests violate the replica caps.
-    # Per-stage thresholds live inside the single policy file, scoped by
-    # destination namespace.
     - uses: kyverno-validate
       as: validate-replicas
       config:
         policy: ${{ vars.policyPath }}
         manifests: ./rendered.yaml
+
+    # Apply the (placeholder) release-marker module. Today: random_id +
+    # terraform_data, no cloud creds. When real resources land, add an `env:`
+    # block here that pulls credentials via `secret(...)` expressions.
+    - uses: tf-apply
+      as: provision
+      config:
+        dir: ${{ vars.tfDir }}
+        vars:
+          - name: stage
+            value: ${{ ctx.stage }}
+          - name: image_tag
+            value: ${{ imageFrom(vars.imageRepo).Tag }}
+        # env:
+        #   - name: AWS_ACCESS_KEY_ID
+        #     value: ${{ secret('aws-creds').accessKeyId }}
+        #   - name: AWS_SECRET_ACCESS_KEY
+        #     value: ${{ secret('aws-creds').secretAccessKey }}
+
+    # Pull declared outputs out of the apply so downstream steps can use them.
+    - uses: tf-output
+      as: tf-out
+      config:
+        dir: ${{ vars.tfDir }}
+        outputs:
+          - release_id
+
     - uses: git-commit
       as: commit
       config:
         path: ./src
         # Inside a PromotionTask, prior-step outputs are read from `task.outputs`.
         message: ${{ task.outputs['update-image'].commitMessage }}
+
     - uses: git-push
       config:
         path: ./src
+
     - uses: argocd-update
       config:
         apps:

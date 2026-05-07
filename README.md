@@ -19,13 +19,15 @@ guestbook-gitops/
 │   └── applications/               # 3 Argo CD Applications, one per overlay
 ├── policies/
 │   └── guestbook-max-replicas.yaml # Kyverno ClusterPolicy: dev/staging ≤20, prod ≤100
+├── terraform/
+│   └── release-marker/             # Placeholder OpenTofu module — runs every promotion
 └── kargo/
     ├── project.yaml                # Kargo Project + Git creds Secret
     ├── warehouse.yaml              # Subscribes to image + git
     ├── custom-steps/               # Cluster-scoped CustomPromotionStep registrations
     │   └── kyverno-validate.yaml   #   runs `kyverno apply` on rendered manifests
     ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
-    │   └── kustomize-promote.yaml  #   clone → set-image → build → kyverno → commit → push → sync
+    │   └── kustomize-promote.yaml  #   clone → set-image → build → kyverno → tf-apply → commit → push → sync
     └── stages/                     # dev → staging → prod (each just references the task)
 ```
 
@@ -77,6 +79,29 @@ Requirements (per the Kargo docs):
 To change a cap, edit `policies/guestbook-max-replicas.yaml` directly. To add
 another check (image registry allowlist, resource limits, etc.), add a rule
 to the same file or a sibling policy under `policies/`.
+
+## Cloud-resource provisioning (placeholder)
+
+Each promotion runs `tf-apply` against `terraform/release-marker/`, a real
+OpenTofu module that today only uses zero-cred providers (`random` +
+built-in `terraform_data`). It produces a stable `release_id` for the
+`(stage, image_tag)` pair and exposes it to subsequent steps via
+`tf-output`. State is local and ephemeral — fine for a placeholder, **not**
+fine the moment a real cloud resource lands here.
+
+The `tf-apply` step sits before `git-commit`, so a terraform failure stops
+the promotion before anything is committed, pushed, or synced (same
+fail-closed posture as the Kyverno gate).
+
+To evolve this into actual provisioning, see the README inside
+`terraform/release-marker/` — short version: add a remote backend, add real
+provider blocks, replace `terraform_data.marker` with real resources, and
+uncomment the commented-out `env:` block in
+`kargo/promotion-tasks/kustomize-promote.yaml` to wire credentials via
+`secret('aws-creds').…` expressions.
+
+`tf-apply` is an Akuity Platform / Kargo EE feature (v1.9+) and requires the
+Promotion Controller — same operational story as the Kyverno custom step.
 
 ## Cluster topology
 
@@ -140,6 +165,13 @@ for env in dev staging prod; do
   kubectl kustomize apps/guestbook/overlays/$env > /tmp/rendered-$env.yaml
   kyverno apply policies/guestbook-max-replicas.yaml --resource /tmp/rendered-$env.yaml
 done
+
+# Dry-run the placeholder terraform module
+cd terraform/release-marker
+terraform init
+terraform apply -var=stage=dev -var=image_tag=v0.0.0-local
+terraform output
+cd -
 ```
 
 ## Notes

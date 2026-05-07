@@ -10,3 +10,10 @@ Thumbs.db
 *.local.yaml
 *.local.yml
 charts/
+
+# Terraform working files (real ones live in terraform/<module>/.gitignore too)
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/.terraform.lock.hcl

@@ -1,0 +1,14 @@
+# Terraform state and lock files — generated at apply time inside Kargo
+# promotion pods. Never commit these.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

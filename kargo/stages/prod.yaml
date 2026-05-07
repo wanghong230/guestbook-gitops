@@ -17,3 +17,11 @@ spec:
       steps:
         - task:
             name: kustomize-promote
+  verification:
+    analysisTemplates:
+      - name: verify-release-echo
+    args:
+      - name: namespace
+        value: guestbook-${{ ctx.stage }}
+      - name: expected_release_id
+        value: ${{ stageMetadata(ctx.stage).release_id }}

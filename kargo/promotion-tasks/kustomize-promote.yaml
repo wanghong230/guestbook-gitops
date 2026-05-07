@@ -118,3 +118,16 @@ spec:
             sources:
               - repoURL: ${{ vars.gitRepo }}
                 desiredRevision: ${{ task.outputs.commit.commit }}
+
+    # Stamp the promoted release_id onto the Stage so the post-deploy
+    # verification (AnalysisTemplate `verify-release-echo`) can pull it back
+    # via `${{ stageMetadata(ctx.stage).release_id }}` and assert the
+    # running Pods are emitting exactly that value.
+    - uses: set-metadata
+      as: stamp-stage
+      config:
+        updates:
+          - kind: Stage
+            name: ${{ ctx.stage }}
+            values:
+              release_id: ${{ task.outputs['tf-out'].release_id }}

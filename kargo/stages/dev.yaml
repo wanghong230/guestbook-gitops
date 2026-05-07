@@ -18,3 +18,14 @@ spec:
       steps:
         - task:
             name: kustomize-promote
+  # Post-deploy gate: the running Pods must emit the release_id that this
+  # promotion stamped onto the Stage. Until this passes, downstream Stages
+  # (staging, prod) refuse to accept the Freight.
+  verification:
+    analysisTemplates:
+      - name: verify-release-echo
+    args:
+      - name: namespace
+        value: guestbook-${{ ctx.stage }}
+      - name: expected_release_id
+        value: ${{ stageMetadata(ctx.stage).release_id }}

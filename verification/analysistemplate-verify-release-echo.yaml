@@ -1,0 +1,72 @@
+# Post-deploy verification: confirm the running Pods are emitting exactly the
+# RELEASE_ID that this promotion stamped. Used by every Stage's
+# `spec.verification` block.
+#
+# This is the Argo Rollouts AnalysisTemplate CRD (re-used by Kargo). Note that
+# expressions inside this resource use Argo Rollouts syntax `{{ args.foo }}`
+# (single braces, no leading $) — distinct from Kargo's `${{ }}`.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: verify-release-echo
+  namespace: guestbook
+spec:
+  args:
+    # Namespace to inspect, e.g. guestbook-dev. Stage passes
+    # `guestbook-${{ ctx.stage }}`.
+    - name: namespace
+    # The release_id we expect to see emitted in the Pod logs. Stage passes
+    # `${{ stageMetadata(ctx.stage).release_id }}`, populated by the
+    # `set-metadata` step at the end of the promotion.
+    - name: expected_release_id
+  metrics:
+    - name: release-echo
+      # The Job either exits 0 (pass) or non-zero (fail). No retries: a stuck
+      # rollout should fail fast and surface in the Kargo UI.
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                serviceAccountName: kargo-verify
+                containers:
+                  - name: verify
+                    image: bitnami/kubectl:1.30
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+                        NS='{{ args.namespace }}'
+                        EXPECTED='{{ args.expected_release_id }}'
+
+                        echo "namespace          = ${NS}"
+                        echo "expected RELEASE_ID = ${EXPECTED}"
+                        if [ -z "${EXPECTED}" ] || [ "${EXPECTED}" = "unset" ]; then
+                          echo "ERROR: expected_release_id is empty or 'unset' — promotion didn't stamp it" >&2
+                          exit 1
+                        fi
+
+                        echo
+                        echo "--- waiting for rollout ---"
+                        kubectl -n "${NS}" rollout status deploy/guestbook --timeout=120s
+
+                        echo
+                        echo "--- giving busybox one echo cycle to land ---"
+                        sleep 12
+
+                        echo
+                        echo "--- recent log lines ---"
+                        kubectl -n "${NS}" logs deploy/guestbook --tail=20 | tee /tmp/log
+
+                        echo
+                        echo "--- checking for 'release: ${EXPECTED}' ---"
+                        if grep -qF "release: ${EXPECTED}" /tmp/log; then
+                          echo "PASS: pod is emitting the expected RELEASE_ID"
+                          exit 0
+                        else
+                          echo "FAIL: did not find 'release: ${EXPECTED}' in recent log output" >&2
+                          exit 1
+                        fi

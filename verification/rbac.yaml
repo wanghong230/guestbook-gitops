@@ -1,0 +1,37 @@
+# RBAC for the AnalysisRun Job spawned by `verify-release-echo`. The Job runs
+# in the project namespace (guestbook) but inspects workloads in the per-Stage
+# namespaces (guestbook-dev, guestbook-staging, guestbook-prod), so it needs
+# cross-namespace read access. Hence ClusterRole + ClusterRoleBinding.
+#
+# If your cluster policy demands per-namespace bindings, replace the single
+# ClusterRoleBinding with three RoleBindings (one in each guestbook-* namespace).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kargo-verify
+  namespace: guestbook
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kargo-verify-pod-log-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kargo-verify-pod-log-reader
+subjects:
+  - kind: ServiceAccount
+    name: kargo-verify
+    namespace: guestbook
+roleRef:
+  kind: ClusterRole
+  name: kargo-verify-pod-log-reader
+  apiGroup: rbac.authorization.k8s.io

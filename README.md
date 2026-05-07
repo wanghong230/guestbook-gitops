@@ -23,14 +23,17 @@ guestbook-gitops/
 │   └── guestbook-max-replicas.yaml # Kyverno ClusterPolicy: dev/staging ≤20, prod ≤100
 ├── terraform/
 │   └── release-marker/             # Placeholder OpenTofu module — runs every promotion
+├── verification/
+│   ├── analysistemplate-verify-release-echo.yaml  # Argo Rollouts AnalysisTemplate
+│   └── rbac.yaml                                  # SA + ClusterRole + binding for the AT Job
 └── kargo/
     ├── project.yaml                # Kargo Project + Git creds Secret
     ├── warehouse.yaml              # Subscribes to image + git
     ├── custom-steps/               # Cluster-scoped CustomPromotionStep registrations
     │   └── kyverno-validate.yaml   #   runs `kyverno apply` on rendered manifests
     ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
-    │   └── kustomize-promote.yaml  #   clone → set-image → tf-apply → tf-output → stamp release_id → build → kyverno → commit → push → sync
-    └── stages/                     # dev → staging → prod (each just references the task)
+    │   └── kustomize-promote.yaml  #   clone → set-image → tf-apply → tf-output → stamp release_id → build → kyverno → commit → push → sync → set-metadata
+    └── stages/                     # dev → staging → prod (each refs the task + a verification block)
 ```
 
 ## Promotion template
@@ -137,6 +140,52 @@ Each promoted busybox tag (1.36 → 1.36.1 → 1.37.0 …) is what Kargo's
 Warehouse picks up — image promotion and release-marker propagation
 happen in the same pipeline.
 
+## Post-deploy verification (AnalysisTemplate)
+
+After every successful promotion to a Stage, Kargo creates an `AnalysisRun`
+from `verification/analysistemplate-verify-release-echo.yaml` (an Argo
+Rollouts `AnalysisTemplate` re-used by Kargo). The Freight is only marked
+"verified in this Stage" if the AnalysisRun ends `Successful`. Downstream
+Stages refuse Freight that hasn't been verified upstream, so a failed
+verification stops the pipeline immediately.
+
+How the expected value is plumbed:
+
+1. The promotion task's last step is `set-metadata`, which stamps the
+   `release_id` (output of `tf-output`) onto the Stage's metadata.
+2. Each Stage's `verification.args` reads it back via
+   `${{ stageMetadata(ctx.stage).release_id }}` and passes it to the
+   AnalysisTemplate as `expected_release_id`.
+3. Inside the AnalysisTemplate (Argo Rollouts syntax: single braces, no
+   `$`) the value lands in the verification Job as `{{ args.expected_release_id }}`.
+4. The Job runs `kubectl rollout status`, sleeps one echo cycle, then
+   `kubectl logs deploy/guestbook | grep -F "release: $EXPECTED"`.
+   Exit 0 → AnalysisRun pass → freight verified. Otherwise fail.
+
+The Job runs in the `guestbook` (project) namespace under the
+`kargo-verify` ServiceAccount, which is granted cluster-wide read access
+to `pods`, `pods/log`, and `deployments` via
+`verification/rbac.yaml`. If your security model demands per-namespace
+bindings, swap the single `ClusterRoleBinding` for three `RoleBinding`s
+in the `guestbook-{dev,staging,prod}` namespaces.
+
+Inspecting verification:
+
+```bash
+# List analysis runs in the project namespace
+kubectl -n guestbook get analysisruns
+
+# Stage metadata — what the verification compared against
+kubectl -n guestbook get stage dev -o jsonpath='{.status.metadata}'
+
+# If a run failed, find its Job pod and read the logs
+kubectl -n guestbook get analysisrun -o name | xargs -I{} kubectl -n guestbook describe {}
+```
+
+What this catches: stale Argo CD sync, a busted `yaml-update`, manual
+overrides on a live Deployment, anything that prevents the new
+`RELEASE_ID` from showing up in the Pod logs.
+
 ## Cluster topology
 
 | Stage     | Argo CD cluster name | Namespace          |
@@ -178,6 +227,11 @@ kubectl apply -f kargo/custom-steps/
 kubectl apply -f kargo/project.yaml
 kubectl apply -f kargo/warehouse.yaml
 kubectl apply -f kargo/promotion-tasks/
+
+# 4. Verification: AnalysisTemplate + RBAC for the verifier Job
+kubectl apply -f verification/
+
+# 5. Stages reference the AnalysisTemplate, so apply them last
 kubectl apply -f kargo/stages/
 ```
 

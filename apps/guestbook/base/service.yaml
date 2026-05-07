@@ -1,3 +1,6 @@
+# Nominal ClusterIP service. The busybox workload doesn't actually serve HTTP,
+# so endpoints will be empty until you swap to a real server image — kept here
+# so the GitOps shape (Deployment + Service) is preserved.
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,6 +12,5 @@ spec:
   selector:
     app.kubernetes.io/name: guestbook
   ports:
-    - name: http
-      port: 80
-      targetPort: http
+    - port: 80
+      targetPort: 80

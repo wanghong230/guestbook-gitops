@@ -2,10 +2,11 @@
 #
 #   git-clone
 #     → kustomize-set-image            (rewrite the overlay's image tag)
+#     → tf-apply (release-marker)      (real OpenTofu run; produces release_id)
+#     → tf-output                      (capture release_id)
+#     → yaml-update                    (write release_id into release-info-patch)
 #     → kustomize-build                (render manifests for inspection)
-#     → kyverno-validate               (replica-cap policy gate)
-#     → tf-apply (release-marker)      (real OpenTofu run, no cloud creds yet)
-#     → tf-output                      (capture release_id for downstream use)
+#     → kyverno-validate               (replica-cap policy gate, post-update)
 #     → git-commit
 #     → git-push
 #     → argocd-update
@@ -23,13 +24,15 @@ spec:
     - name: gitRepo
       value: https://github.com/wanghong230/guestbook-gitops.git
     - name: imageRepo
-      value: quay.io/guestbook
+      value: docker.io/library/busybox
     - name: branch
       value: main
     - name: policyPath
       value: ./src/policies/guestbook-max-replicas.yaml
     - name: tfDir
       value: ./src/terraform/release-marker
+    - name: overlayDir
+      value: ./src/apps/guestbook/overlays/${{ ctx.stage }}
   steps:
     - uses: git-clone
       config:
@@ -41,22 +44,9 @@ spec:
     - uses: kustomize-set-image
       as: update-image
       config:
-        path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
+        path: ${{ vars.overlayDir }}
         images:
           - image: ${{ vars.imageRepo }}
-
-    # Render the overlay so we have concrete YAML for Kyverno to inspect.
-    - uses: kustomize-build
-      config:
-        path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
-        outPath: ./rendered.yaml
-
-    # Fail the promotion if the rendered manifests violate the replica caps.
-    - uses: kyverno-validate
-      as: validate-replicas
-      config:
-        policy: ${{ vars.policyPath }}
-        manifests: ./rendered.yaml
 
     # Apply the (placeholder) release-marker module. Today: random_id +
     # terraform_data, no cloud creds. When real resources land, add an `env:`
@@ -83,6 +73,31 @@ spec:
         dir: ${{ vars.tfDir }}
         outputs:
           - release_id
+
+    # Stamp the release_id into the overlay's release-info-patch.yaml so the
+    # rendered Deployment carries it as the RELEASE_ID env var on the
+    # release-info sidecar. The patch file's shape is stable, so the index
+    # path below stays valid.
+    - uses: yaml-update
+      as: stamp-release-id
+      config:
+        path: ${{ vars.overlayDir }}/release-info-patch.yaml
+        updates:
+          - key: spec.template.spec.containers[0].env[0].value
+            value: ${{ task.outputs['tf-out'].release_id }}
+
+    # Render the (now updated) overlay so Kyverno sees the final state.
+    - uses: kustomize-build
+      config:
+        path: ${{ vars.overlayDir }}
+        outPath: ./rendered.yaml
+
+    # Fail the promotion if the rendered manifests violate the replica caps.
+    - uses: kyverno-validate
+      as: validate-replicas
+      config:
+        policy: ${{ vars.policyPath }}
+        manifests: ./rendered.yaml
 
     - uses: git-commit
       as: commit

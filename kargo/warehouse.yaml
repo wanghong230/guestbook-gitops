@@ -1,5 +1,5 @@
-# The Warehouse polls upstream artifact sources (a container image and the
-# GitOps repo) and produces Freight that the Stages can promote.
+# The Warehouse polls upstream artifact sources (the busybox container image
+# and the GitOps repo) and produces Freight that the Stages can promote.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Warehouse
 metadata:
@@ -8,12 +8,12 @@ metadata:
 spec:
   subscriptions:
     - image:
-        repoURL: quay.io/guestbook
-        # Lexical works for tags like v1.2.3 / 2026-05-06-abc123.
-        # Switch to SemVer if your tags are strictly semver.
-        imageSelectionStrategy: Lexical
-        # Ignore the moving "latest" pointer; Kargo needs immutable tags.
-        allowTags: ^(?!latest$).+$
+        repoURL: docker.io/library/busybox
+        # SemVer captures tags like 1.36, 1.36.1, 1.37 and orders them correctly.
+        imageSelectionStrategy: SemVer
+        # Strict 3-part semver only — excludes `latest`, `unstable`,
+        # `1.36-glibc`, etc. Loosen this if you want to track variant tags.
+        allowTags: ^[0-9]+\.[0-9]+\.[0-9]+$
     - git:
         repoURL: https://github.com/wanghong230/guestbook-gitops.git
         branch: main

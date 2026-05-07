@@ -1,14 +1,16 @@
 # guestbook-gitops
 
-GitOps repo to deploy `quay.io/guestbook` to three environments across two
-clusters using Argo CD for sync and Kargo for promotion.
+GitOps repo that promotes `docker.io/library/busybox` versions through three
+environments across two clusters using Argo CD for sync and Kargo for
+promotion. The Deployment runs a busybox echo loop that prints the current
+`RELEASE_ID` (produced by the per-promotion terraform run) every 10 seconds.
 
 ## Layout
 
 ```
 guestbook-gitops/
 ├── apps/guestbook/
-│   ├── base/                       # Deployment + Service (image: quay.io/guestbook)
+│   ├── base/                       # Deployment (busybox echo loop) + nominal Service
 │   └── overlays/
 │       ├── dev/                    # ns: guestbook-dev,    1 replica
 │       ├── staging/                # ns: guestbook-staging, 2 replicas
@@ -27,7 +29,7 @@ guestbook-gitops/
     ├── custom-steps/               # Cluster-scoped CustomPromotionStep registrations
     │   └── kyverno-validate.yaml   #   runs `kyverno apply` on rendered manifests
     ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
-    │   └── kustomize-promote.yaml  #   clone → set-image → build → kyverno → tf-apply → commit → push → sync
+    │   └── kustomize-promote.yaml  #   clone → set-image → tf-apply → tf-output → stamp release_id → build → kyverno → commit → push → sync
     └── stages/                     # dev → staging → prod (each just references the task)
 ```
 
@@ -103,6 +105,38 @@ uncomment the commented-out `env:` block in
 `tf-apply` is an Akuity Platform / Kargo EE feature (v1.9+) and requires the
 Promotion Controller — same operational story as the Kyverno custom step.
 
+### Threading `release_id` into the running Pod
+
+The Deployment's single container is busybox running a 10-second echo loop:
+
+```yaml
+containers:
+  - name: guestbook
+    image: docker.io/library/busybox:1.36   # newTag rewritten per promotion
+    command: ["/bin/sh", "-c"]
+    args: ["while true; do echo \"release: $RELEASE_ID\"; sleep 10; done"]
+    env:
+      - name: RELEASE_ID
+        value: "unset"   # base default; overlay overrides this
+```
+
+After `tf-output` captures `release_id`, the promotion runs `yaml-update`
+to write the value into the per-overlay `release-info-patch.yaml`, which
+strategic-merges its `RELEASE_ID` env onto the base container (env entries
+are merged by `name`, so only that one variable changes). On every
+promotion the env value flips → Deployment spec changes → Argo CD rolls
+the Pods → busybox starts emitting the new ID.
+
+To watch it:
+
+```bash
+kubectl logs -n guestbook-dev deploy/guestbook -f
+```
+
+Each promoted busybox tag (1.36 → 1.36.1 → 1.37.0 …) is what Kargo's
+Warehouse picks up — image promotion and release-marker propagation
+happen in the same pipeline.
+
 ## Cluster topology
 
 | Stage     | Argo CD cluster name | Namespace          |
@@ -113,14 +147,15 @@ Promotion Controller — same operational story as the Kyverno custom step.
 
 ## Promotion flow
 
-1. CI pushes a new immutable tag (e.g. `v1.4.2`) to `quay.io/guestbook`.
-2. Kargo's `Warehouse` discovers the tag and produces new Freight.
-3. The `dev` Stage auto-promotes (per `promotionPolicies` in `kargo/project.yaml`):
-   it clones the repo, runs `kustomize edit set image` against
-   `apps/guestbook/overlays/dev`, commits, pushes, and tells Argo CD to sync
-   `guestbook-dev`.
-4. After dev verification, you (or an automated check) promote that Freight to
-   `staging` — same pattern, against the staging overlay.
+1. A new busybox tag is published (e.g. `1.37.0`) to Docker Hub.
+2. Kargo's `Warehouse` discovers it and produces new Freight.
+3. The `dev` Stage auto-promotes: it clones the repo, runs `kustomize edit
+   set image` against `apps/guestbook/overlays/dev`, applies the terraform
+   release-marker module to mint a fresh `release_id`, stamps it into
+   `release-info-patch.yaml`, validates against the Kyverno replica caps,
+   commits, pushes, and tells Argo CD to sync `guestbook-dev`.
+4. After dev observation, you promote the same Freight to `staging` —
+   identical pipeline, different overlay.
 5. Same for `prod`, which targets the `local-prod` cluster.
 
 Each Stage only accepts Freight from the prior stage, so you can't skip
@@ -176,9 +211,12 @@ cd -
 
 ## Notes
 
-- Overlays pin `quay.io/guestbook:latest` only as a starting point. Kargo
+- Overlays pin `docker.io/library/busybox:1.36` as a starting point. Kargo
   rewrites `images[0].newTag` on each promotion, so the in-tree value drifts
   to the most recently promoted tag for each environment.
+- The `Service` is nominal — busybox doesn't actually serve HTTP, so its
+  endpoints will be empty. Swap to a real server image (or add an `httpd
+  -f -p 80` sidecar) if you need a working ClusterIP.
 - `dev` is set to auto-promote; `staging` and `prod` require an explicit
   promotion (a `Promotion` resource, the Kargo UI button, or `kargo promote`).
 - Each Argo CD `Application` carries `kargo.akuity.io/authorized-stage` so

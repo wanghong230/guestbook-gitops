@@ -1,0 +1,19 @@
+# Per-overlay env override on the main `guestbook` container. Kustomize
+# strategic-merge merges env entries by `name`, so this replaces the base's
+# RELEASE_ID default without affecting any other env vars.
+#
+# Kargo rewrites the value below on every promotion via the `yaml-update`
+# step. The path of the value is `spec.template.spec.containers[0].env[0].value`
+# — keep this file's shape stable so that index stays valid.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guestbook
+spec:
+  template:
+    spec:
+      containers:
+        - name: guestbook
+          env:
+            - name: RELEASE_ID
+              value: "unset"

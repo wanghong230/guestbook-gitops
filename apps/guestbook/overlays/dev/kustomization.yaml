@@ -15,8 +15,12 @@ patches:
     target:
       kind: Deployment
       name: guestbook
+  - path: release-info-patch.yaml
+    target:
+      kind: Deployment
+      name: guestbook
 
 # Kargo rewrites `newTag` here on each promotion to dev.
 images:
-  - name: quay.io/guestbook
-    newTag: latest
+  - name: docker.io/library/busybox
+    newTag: "1.36"

@@ -10,42 +10,11 @@ spec:
         name: guestbook
       sources:
         direct: true
+  # The promotion logic is shared via the `kustomize-promote` PromotionTask.
+  # `${{ ctx.stage }}` inside the task resolves to "dev", picking the right
+  # overlay and Argo CD app automatically.
   promotionTemplate:
     spec:
-      vars:
-        - name: gitRepo
-          value: https://github.com/wanghong230/guestbook-gitops.git
-        - name: imageRepo
-          value: quay.io/guestbook
-        - name: overlayPath
-          value: apps/guestbook/overlays/dev
       steps:
-        - uses: git-clone
-          config:
-            repoURL: ${{ vars.gitRepo }}
-            checkout:
-              - branch: main
-                path: ./src
-        - uses: kustomize-set-image
-          as: update-image
-          config:
-            path: ./src/${{ vars.overlayPath }}
-            images:
-              - image: ${{ vars.imageRepo }}
-        - uses: git-commit
-          as: commit
-          config:
-            path: ./src
-            messageFromSteps:
-              - update-image
-        - uses: git-push
-          config:
-            path: ./src
-        - uses: argocd-update
-          config:
-            apps:
-              - name: guestbook-dev
-                namespace: argocd
-                sources:
-                  - repoURL: ${{ vars.gitRepo }}
-                    desiredCommitFromStep: commit
+        - task:
+            name: kustomize-promote

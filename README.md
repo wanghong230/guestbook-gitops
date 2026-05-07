@@ -20,8 +20,30 @@ guestbook-gitops/
 └── kargo/
     ├── project.yaml                # Kargo Project + Git creds Secret
     ├── warehouse.yaml              # Subscribes to image + git
-    └── stages/                     # dev → staging → prod
+    ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
+    │   └── kustomize-promote.yaml  #   git-clone → set-image → commit → push → argocd-update
+    └── stages/                     # dev → staging → prod (each just references the task)
 ```
+
+## Promotion template
+
+The three Stages share a single `PromotionTask` (`kargo/promotion-tasks/kustomize-promote.yaml`)
+rather than each carrying its own copy of the steps. The task uses
+`${{ ctx.stage }}` to pick the matching overlay
+(`apps/guestbook/overlays/${{ ctx.stage }}`) and Argo CD app
+(`guestbook-${{ ctx.stage }}`), so each `Stage` resource only has to declare
+its upstream Freight source — the step list collapses to:
+
+```yaml
+promotionTemplate:
+  spec:
+    steps:
+      - task:
+          name: kustomize-promote
+```
+
+To override the repo URL or image for one Stage, pass step-level vars on the
+task reference (see the Promotion Tasks reference for syntax).
 
 ## Cluster topology
 
@@ -56,9 +78,10 @@ kubectl apply -f argocd/projects/
 kubectl apply -f argocd/clusters/
 kubectl apply -f argocd/applications/
 
-# 2. Kargo: project + git creds, warehouse, stages
+# 2. Kargo: project + git creds, warehouse, promotion task, stages
 kubectl apply -f kargo/project.yaml
 kubectl apply -f kargo/warehouse.yaml
+kubectl apply -f kargo/promotion-tasks/
 kubectl apply -f kargo/stages/
 ```
 
@@ -66,7 +89,8 @@ Placeholders to fill:
 - `argocd/clusters/*-secret.yaml` — API server URL, bearer token, CA bundle.
 - `argocd/applications/*.yaml` — `spec.source.repoURL` (your fork of this repo).
 - `kargo/project.yaml` — git PAT under `gitops-repo-creds`, plus `repoURL`.
-- `kargo/warehouse.yaml` and `kargo/stages/*.yaml` — `repoURL` (same value).
+- `kargo/warehouse.yaml` and `kargo/promotion-tasks/kustomize-promote.yaml` —
+  `repoURL` defaults (same value across the file).
 
 ## Testing the manifests locally
 

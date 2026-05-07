@@ -1,0 +1,53 @@
+# Reusable promotion task: rewrites the image tag in the Kustomize overlay for
+# the current Stage, commits, pushes, and asks Argo CD to sync the matching
+# Application. Each Stage's promotionTemplate just references this task, so the
+# step list lives in one place.
+#
+# `${{ ctx.stage }}` resolves to the name of the Stage that's invoking the
+# task (e.g. "dev", "staging", "prod"), which we use to pick the overlay
+# directory and the Argo CD Application name.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: kustomize-promote
+  namespace: guestbook
+spec:
+  # Defaults make these optional at the call site. Override per-Stage by
+  # passing `vars` on the task step if you ever need to.
+  vars:
+    - name: gitRepo
+      value: https://github.com/wanghong230/guestbook-gitops.git
+    - name: imageRepo
+      value: quay.io/guestbook
+    - name: branch
+      value: main
+  steps:
+    - uses: git-clone
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        checkout:
+          - branch: ${{ vars.branch }}
+            path: ./src
+    - uses: kustomize-set-image
+      as: update-image
+      config:
+        path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
+        images:
+          - image: ${{ vars.imageRepo }}
+    - uses: git-commit
+      as: commit
+      config:
+        path: ./src
+        # Inside a PromotionTask, prior-step outputs are read from `task.outputs`.
+        message: ${{ task.outputs['update-image'].commitMessage }}
+    - uses: git-push
+      config:
+        path: ./src
+    - uses: argocd-update
+      config:
+        apps:
+          - name: guestbook-${{ ctx.stage }}
+            namespace: argocd
+            sources:
+              - repoURL: ${{ vars.gitRepo }}
+                desiredRevision: ${{ task.outputs.commit.commit }}

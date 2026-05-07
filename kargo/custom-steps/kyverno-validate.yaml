@@ -1,0 +1,50 @@
+# Cluster-scoped CustomPromotionStep that runs the Kyverno CLI against a set
+# of rendered manifests. The promotion fails if any policy rule is violated.
+#
+# REQUIREMENTS (per Kargo docs):
+#   - Akuity Platform (hosted Kargo EE), v1.10+, alpha feature.
+#   - Promotion Controller enabled, with a self-hosted agent for Pod-based
+#     promotions.
+#   - This resource is cluster-scoped — apply it once with cluster-admin.
+#
+# USAGE (from a PromotionTask or promotionTemplate):
+#   - uses: kyverno-validate
+#     as: validate
+#     config:
+#       policy:    ./src/policies/some-policy.yaml
+#       manifests: ./rendered.yaml
+#
+# Both paths are relative to the promotion pod's shared workdir, which is
+# populated by previous steps (e.g. git-clone + kustomize-build).
+apiVersion: ee.kargo.akuity.io/v1alpha1
+kind: CustomPromotionStep
+metadata:
+  name: kyverno-validate
+spec:
+  image: ghcr.io/kyverno/kyverno-cli:v1.13.0
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -euo pipefail
+      echo "Validating ${{ config.manifests }} against ${{ config.policy }}"
+      # `kyverno apply` exits non-zero on any policy failure, which fails the
+      # promotion step. `--audit-warn` keeps Audit-action policies as warnings,
+      # but our policy uses Enforce so violations fail.
+      kyverno apply "${{ config.policy }}" \
+        --resource "${{ config.manifests }}" \
+        --audit-warn \
+        2>&1 | tee "$KARGO_OUTPUT"
+  output:
+    source:
+      type: Pipe
+      format: Text
+  defaultTimeout: 5m
+  defaultErrorThreshold: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

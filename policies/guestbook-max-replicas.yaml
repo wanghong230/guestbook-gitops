@@ -1,0 +1,44 @@
+# Replica caps for the guestbook app, enforced during Kargo promotions
+# (and re-usable by an in-cluster Kyverno install if you wire it up).
+# One rule per Stage namespace — adjust thresholds here when limits change.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: guestbook-max-replicas
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: replicas-le-20-dev
+      match:
+        any:
+          - resources:
+              kinds: [Deployment]
+              namespaces: [guestbook-dev]
+      validate:
+        message: "dev: Deployment {{ request.object.metadata.name }} must have spec.replicas <= 20 (got {{ request.object.spec.replicas }})."
+        pattern:
+          spec:
+            replicas: "<=20"
+    - name: replicas-le-20-staging
+      match:
+        any:
+          - resources:
+              kinds: [Deployment]
+              namespaces: [guestbook-staging]
+      validate:
+        message: "staging: Deployment {{ request.object.metadata.name }} must have spec.replicas <= 20 (got {{ request.object.spec.replicas }})."
+        pattern:
+          spec:
+            replicas: "<=20"
+    - name: replicas-le-100-prod
+      match:
+        any:
+          - resources:
+              kinds: [Deployment]
+              namespaces: [guestbook-prod]
+      validate:
+        message: "prod: Deployment {{ request.object.metadata.name }} must have spec.replicas <= 100 (got {{ request.object.spec.replicas }})."
+        pattern:
+          spec:
+            replicas: "<=100"

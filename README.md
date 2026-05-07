@@ -17,11 +17,15 @@ guestbook-gitops/
 │   ├── projects/                   # AppProject "guestbook"
 │   ├── clusters/                   # Cluster Secrets for local-nonprod, local-prod
 │   └── applications/               # 3 Argo CD Applications, one per overlay
+├── policies/
+│   └── guestbook-max-replicas.yaml # Kyverno ClusterPolicy: dev/staging ≤20, prod ≤100
 └── kargo/
     ├── project.yaml                # Kargo Project + Git creds Secret
     ├── warehouse.yaml              # Subscribes to image + git
+    ├── custom-steps/               # Cluster-scoped CustomPromotionStep registrations
+    │   └── kyverno-validate.yaml   #   runs `kyverno apply` on rendered manifests
     ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
-    │   └── kustomize-promote.yaml  #   git-clone → set-image → commit → push → argocd-update
+    │   └── kustomize-promote.yaml  #   clone → set-image → build → kyverno → commit → push → sync
     └── stages/                     # dev → staging → prod (each just references the task)
 ```
 
@@ -44,6 +48,35 @@ promotionTemplate:
 
 To override the repo URL or image for one Stage, pass step-level vars on the
 task reference (see the Promotion Tasks reference for syntax).
+
+## Replica-cap validation (Kyverno)
+
+The promotion task renders the overlay with `kustomize-build` and then runs a
+custom step (`kyverno-validate`) that invokes the Kyverno CLI against
+`policies/guestbook-max-replicas.yaml`. The policy carries one rule per Stage
+namespace:
+
+| Stage     | Namespace          | Max replicas |
+|-----------|--------------------|--------------|
+| dev       | guestbook-dev      | 20           |
+| staging   | guestbook-staging  | 20           |
+| prod      | guestbook-prod     | 100          |
+
+If the rendered Deployment violates the cap, Kyverno exits non-zero, the
+custom step fails, and the promotion stops **before** anything is committed,
+pushed, or synced — the bad replica count never reaches the cluster.
+
+Requirements (per the Kargo docs):
+
+- `CustomPromotionStep` is an **Akuity Platform (Kargo EE) v1.10+** feature,
+  currently alpha.
+- The Promotion Controller and a self-hosted agent must be enabled.
+- `kargo/custom-steps/kyverno-validate.yaml` is **cluster-scoped** — a Kargo
+  cluster admin must apply it once.
+
+To change a cap, edit `policies/guestbook-max-replicas.yaml` directly. To add
+another check (image registry allowlist, resource limits, etc.), add a rule
+to the same file or a sibling policy under `policies/`.
 
 ## Cluster topology
 
@@ -78,7 +111,10 @@ kubectl apply -f argocd/projects/
 kubectl apply -f argocd/clusters/
 kubectl apply -f argocd/applications/
 
-# 2. Kargo: project + git creds, warehouse, promotion task, stages
+# 2. Kargo cluster admin (one-time): register the custom step
+kubectl apply -f kargo/custom-steps/
+
+# 3. Kargo project: git creds, warehouse, promotion task, stages
 kubectl apply -f kargo/project.yaml
 kubectl apply -f kargo/warehouse.yaml
 kubectl apply -f kargo/promotion-tasks/
@@ -98,6 +134,12 @@ Placeholders to fill:
 kubectl kustomize apps/guestbook/overlays/dev
 kubectl kustomize apps/guestbook/overlays/staging
 kubectl kustomize apps/guestbook/overlays/prod
+
+# Dry-run the same Kyverno check the promotion will run
+for env in dev staging prod; do
+  kubectl kustomize apps/guestbook/overlays/$env > /tmp/rendered-$env.yaml
+  kyverno apply policies/guestbook-max-replicas.yaml --resource /tmp/rendered-$env.yaml
+done
 ```
 
 ## Notes

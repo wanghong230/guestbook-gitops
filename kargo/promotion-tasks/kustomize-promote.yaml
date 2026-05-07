@@ -1,5 +1,6 @@
 # Reusable promotion task: rewrites the image tag in the Kustomize overlay for
-# the current Stage, commits, pushes, and asks Argo CD to sync the matching
+# the current Stage, validates the rendered manifests against the Kyverno
+# replica-cap policy, commits, pushes, and asks Argo CD to sync the matching
 # Application. Each Stage's promotionTemplate just references this task, so the
 # step list lives in one place.
 #
@@ -21,6 +22,8 @@ spec:
       value: quay.io/guestbook
     - name: branch
       value: main
+    - name: policyPath
+      value: ./src/policies/guestbook-max-replicas.yaml
   steps:
     - uses: git-clone
       config:
@@ -34,6 +37,19 @@ spec:
         path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
         images:
           - image: ${{ vars.imageRepo }}
+    # Render the overlay so we have concrete YAML for Kyverno to inspect.
+    - uses: kustomize-build
+      config:
+        path: ./src/apps/guestbook/overlays/${{ ctx.stage }}
+        outPath: ./rendered.yaml
+    # Fail the promotion if the rendered manifests violate the replica caps.
+    # Per-stage thresholds live inside the single policy file, scoped by
+    # destination namespace.
+    - uses: kyverno-validate
+      as: validate-replicas
+      config:
+        policy: ${{ vars.policyPath }}
+        manifests: ./rendered.yaml
     - uses: git-commit
       as: commit
       config:

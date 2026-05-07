@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-dev
+  namespace: argocd
+  # Authorizes Kargo to manage this Application (sync, refresh, update).
+  annotations:
+    kargo.akuity.io/authorized-stage: guestbook:dev
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: guestbook
+  source:
+    repoURL: https://github.com/wanghong230/guestbook-gitops.git
+    targetRevision: main
+    path: apps/guestbook/overlays/dev
+  destination:
+    name: local-nonprod
+    namespace: guestbook-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

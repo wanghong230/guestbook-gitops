@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+commonLabels:
+  app.kubernetes.io/part-of: guestbook
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+# Default image; overlays pin a specific tag, and Kargo updates it on promotion.
+images:
+  - name: quay.io/guestbook
+    newTag: latest

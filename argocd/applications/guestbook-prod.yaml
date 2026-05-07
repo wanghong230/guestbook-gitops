@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-prod
+  namespace: argocd
+  annotations:
+    kargo.akuity.io/authorized-stage: guestbook:prod
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: guestbook
+  source:
+    repoURL: https://github.com/wanghong230/guestbook-gitops.git
+    targetRevision: main
+    path: apps/guestbook/overlays/prod
+  destination:
+    name: local-prod
+    namespace: guestbook-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

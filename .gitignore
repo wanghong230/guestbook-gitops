@@ -1,0 +1,12 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local kustomize/helm scratch output
+*.local.yaml
+*.local.yml
+charts/

@@ -1,0 +1,87 @@
+# guestbook-gitops
+
+GitOps repo to deploy `quay.io/guestbook` to three environments across two
+clusters using Argo CD for sync and Kargo for promotion.
+
+## Layout
+
+```
+guestbook-gitops/
+├── apps/guestbook/
+│   ├── base/                       # Deployment + Service (image: quay.io/guestbook)
+│   └── overlays/
+│       ├── dev/                    # ns: guestbook-dev,    1 replica
+│       ├── staging/                # ns: guestbook-staging, 2 replicas
+│       └── prod/                   # ns: guestbook-prod,    3 replicas
+├── argocd/
+│   ├── projects/                   # AppProject "guestbook"
+│   ├── clusters/                   # Cluster Secrets for local-nonprod, local-prod
+│   └── applications/               # 3 Argo CD Applications, one per overlay
+└── kargo/
+    ├── project.yaml                # Kargo Project + Git creds Secret
+    ├── warehouse.yaml              # Subscribes to image + git
+    └── stages/                     # dev → staging → prod
+```
+
+## Cluster topology
+
+| Stage     | Argo CD cluster name | Namespace          |
+|-----------|----------------------|--------------------|
+| dev       | local-nonprod        | guestbook-dev      |
+| staging   | local-nonprod        | guestbook-staging  |
+| prod      | local-prod           | guestbook-prod     |
+
+## Promotion flow
+
+1. CI pushes a new immutable tag (e.g. `v1.4.2`) to `quay.io/guestbook`.
+2. Kargo's `Warehouse` discovers the tag and produces new Freight.
+3. The `dev` Stage auto-promotes (per `promotionPolicies` in `kargo/project.yaml`):
+   it clones the repo, runs `kustomize edit set image` against
+   `apps/guestbook/overlays/dev`, commits, pushes, and tells Argo CD to sync
+   `guestbook-dev`.
+4. After dev verification, you (or an automated check) promote that Freight to
+   `staging` — same pattern, against the staging overlay.
+5. Same for `prod`, which targets the `local-prod` cluster.
+
+Each Stage only accepts Freight from the prior stage, so you can't skip
+straight from a fresh image to prod.
+
+## Bootstrap
+
+Replace every `REPLACE_ME` / `REPLACE-WITH-...` placeholder first, then:
+
+```bash
+# 1. Argo CD: project, cluster Secrets, Applications
+kubectl apply -f argocd/projects/
+kubectl apply -f argocd/clusters/
+kubectl apply -f argocd/applications/
+
+# 2. Kargo: project + git creds, warehouse, stages
+kubectl apply -f kargo/project.yaml
+kubectl apply -f kargo/warehouse.yaml
+kubectl apply -f kargo/stages/
+```
+
+Placeholders to fill:
+- `argocd/clusters/*-secret.yaml` — API server URL, bearer token, CA bundle.
+- `argocd/applications/*.yaml` — `spec.source.repoURL` (your fork of this repo).
+- `kargo/project.yaml` — git PAT under `gitops-repo-creds`, plus `repoURL`.
+- `kargo/warehouse.yaml` and `kargo/stages/*.yaml` — `repoURL` (same value).
+
+## Testing the manifests locally
+
+```bash
+kubectl kustomize apps/guestbook/overlays/dev
+kubectl kustomize apps/guestbook/overlays/staging
+kubectl kustomize apps/guestbook/overlays/prod
+```
+
+## Notes
+
+- Overlays pin `quay.io/guestbook:latest` only as a starting point. Kargo
+  rewrites `images[0].newTag` on each promotion, so the in-tree value drifts
+  to the most recently promoted tag for each environment.
+- `dev` is set to auto-promote; `staging` and `prod` require an explicit
+  promotion (a `Promotion` resource, the Kargo UI button, or `kargo promote`).
+- Each Argo CD `Application` carries `kargo.akuity.io/authorized-stage` so
+  only the corresponding Stage can drive it.

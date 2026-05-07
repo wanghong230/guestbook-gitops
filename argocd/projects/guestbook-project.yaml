@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: guestbook
+  namespace: argocd
+  # Allow Kargo to mark Applications as needing sync after promotion.
+  annotations: {}
+spec:
+  description: Guestbook deployments managed by Kargo
+  sourceRepos:
+    - "*"
+  destinations:
+    - name: local-nonprod
+      namespace: guestbook-dev
+    - name: local-nonprod
+      namespace: guestbook-staging
+    - name: local-prod
+      namespace: guestbook-prod
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

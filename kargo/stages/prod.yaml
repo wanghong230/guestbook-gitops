@@ -1,0 +1,53 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: prod
+  namespace: guestbook
+spec:
+  # Production only accepts freight already verified in `staging`.
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: guestbook
+      sources:
+        stages:
+          - staging
+  promotionTemplate:
+    spec:
+      vars:
+        - name: gitRepo
+          value: https://github.com/wanghong230/guestbook-gitops.git
+        - name: imageRepo
+          value: quay.io/guestbook
+        - name: overlayPath
+          value: apps/guestbook/overlays/prod
+      steps:
+        - uses: git-clone
+          config:
+            repoURL: ${{ vars.gitRepo }}
+            checkout:
+              - branch: main
+                path: ./src
+        - uses: kustomize-set-image
+          as: update-image
+          config:
+            path: ./src/${{ vars.overlayPath }}
+            images:
+              - image: ${{ vars.imageRepo }}
+        - uses: git-commit
+          as: commit
+          config:
+            path: ./src
+            messageFromSteps:
+              - update-image
+        - uses: git-push
+          config:
+            path: ./src
+        - uses: argocd-update
+          config:
+            apps:
+              - name: guestbook-prod
+                namespace: argocd
+                sources:
+                  - repoURL: ${{ vars.gitRepo }}
+                    desiredCommitFromStep: commit

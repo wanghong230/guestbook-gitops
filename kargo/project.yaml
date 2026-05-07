@@ -1,0 +1,29 @@
+# A Kargo Project owns a namespace of the same name. Stages, Warehouses,
+# and Promotions for guestbook all live in this namespace.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Project
+metadata:
+  name: guestbook
+spec:
+  promotionPolicies:
+    - stage: dev
+      autoPromotionEnabled: true
+    - stage: staging
+      autoPromotionEnabled: false
+    - stage: prod
+      autoPromotionEnabled: false
+---
+# Credentials Kargo uses to write back to the GitOps repo. Replace the
+# placeholder values; `repoURL` must match the URL on each Stage's git steps.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitops-repo-creds
+  namespace: guestbook
+  labels:
+    kargo.akuity.io/cred-type: git
+type: Opaque
+stringData:
+  repoURL: https://github.com/wanghong230/guestbook-gitops.git
+  username: REPLACE_ME
+  password: REPLACE_ME_PAT_OR_APP_TOKEN

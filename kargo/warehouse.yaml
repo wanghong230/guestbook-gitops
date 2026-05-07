@@ -1,0 +1,19 @@
+# The Warehouse polls upstream artifact sources (a container image and the
+# GitOps repo) and produces Freight that the Stages can promote.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: guestbook
+  namespace: guestbook
+spec:
+  subscriptions:
+    - image:
+        repoURL: quay.io/guestbook
+        # Lexical works for tags like v1.2.3 / 2026-05-06-abc123.
+        # Switch to SemVer if your tags are strictly semver.
+        imageSelectionStrategy: Lexical
+        # Ignore the moving "latest" pointer; Kargo needs immutable tags.
+        allowTags: ^(?!latest$).+$
+    - git:
+        repoURL: https://github.com/wanghong230/guestbook-gitops.git
+        branch: main

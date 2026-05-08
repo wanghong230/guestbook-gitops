@@ -1,8 +1,10 @@
 # guestbook-gitops
 
-GitOps repo that promotes `docker.io/library/busybox` versions through three
-environments across two clusters using Argo CD for sync and Kargo for
-promotion. The Deployment runs a busybox echo loop that prints the current
+GitOps repo that promotes `mirror.gcr.io/library/busybox` versions through
+three environments across two clusters using Argo CD for sync and Kargo for
+promotion. (We use Google's pull-through cache `mirror.gcr.io/library/*`
+instead of `docker.io/library/*` to avoid Docker Hub's anonymous pull rate
+limit.) The Deployment runs a busybox echo loop that prints the current
 `RELEASE_ID` (produced by the per-promotion terraform run) every 10 seconds.
 
 ## Layout
@@ -115,7 +117,7 @@ The Deployment's single container is busybox running a 10-second echo loop:
 ```yaml
 containers:
   - name: guestbook
-    image: docker.io/library/busybox:1.36   # newTag rewritten per promotion
+    image: mirror.gcr.io/library/busybox:1.36   # newTag rewritten per promotion
     command: ["/bin/sh", "-c"]
     args: ["while true; do echo \"release: $RELEASE_ID\"; sleep 10; done"]
     env:
@@ -162,10 +164,14 @@ How the expected value is plumbed:
    `kubectl logs deploy/guestbook | grep -F "release: $EXPECTED"`.
    Exit 0 → AnalysisRun pass → freight verified. Otherwise fail.
 
-The Job runs in the `guestbook` (project) namespace under the
-`kargo-verify` ServiceAccount, which is granted cluster-wide read access
-to `pods`, `pods/log`, and `deployments` via
-`verification/rbac.yaml`. If your security model demands per-namespace
+The Job runs in the `akuity` namespace (where the self-hosted Kargo
+agent materializes AnalysisRuns). The `ClusterRoleBinding` in
+`verification/rbac.yaml` grants cluster-wide read access on `pods`,
+`pods/log`, and `deployments` to two ServiceAccounts in `akuity`:
+`kargo-verify` (the explicitly-named one) and `default` (the one the
+AnalysisRun pod actually runs as today, because Kargo's verification
+controller doesn't propagate the AnalysisTemplate's `serviceAccountName`
+to the Job pod). If your security model demands per-namespace
 bindings, swap the single `ClusterRoleBinding` for three `RoleBinding`s
 in the `guestbook-{dev,staging,prod}` namespaces.
 
@@ -265,9 +271,9 @@ cd -
 
 ## Notes
 
-- Overlays pin `docker.io/library/busybox:1.36` as a starting point. Kargo
-  rewrites `images[0].newTag` on each promotion, so the in-tree value drifts
-  to the most recently promoted tag for each environment.
+- Overlays pin `mirror.gcr.io/library/busybox:1.36` as a starting point.
+  Kargo rewrites `images[0].newTag` on each promotion, so the in-tree value
+  drifts to the most recently promoted tag for each environment.
 - The `Service` is nominal — busybox doesn't actually serve HTTP, so its
   endpoints will be empty. Swap to a real server image (or add an `httpd
   -f -p 80` sidecar) if you need a working ClusterIP.

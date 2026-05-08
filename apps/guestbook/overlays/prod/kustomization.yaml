@@ -22,5 +22,5 @@ patches:
 
 # Kargo rewrites `newTag` here on each promotion to prod.
 images:
-  - name: docker.io/library/busybox
+  - name: mirror.gcr.io/library/busybox
     newTag: "1.36"

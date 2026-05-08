@@ -10,10 +10,15 @@
 #     → git-commit
 #     → git-push
 #     → argocd-update
+#     → set-metadata                   (stamp release_id onto the Stage for verification)
 #
 # `${{ ctx.stage }}` resolves to the name of the Stage that's invoking the
 # task ("dev", "staging", "prod"), driving the overlay path, the policy
 # scoping, and the Argo CD Application name.
+#
+# `task.outputs['tf-out'].release_id.value` — the `.value` is required
+# because tf-output emits Terraform's JSON-output shape:
+#   { release_id: { value: "<hex>", type: "string" } }
 apiVersion: kargo.akuity.io/v1alpha1
 kind: PromotionTask
 metadata:
@@ -24,7 +29,7 @@ spec:
     - name: gitRepo
       value: https://github.com/wanghong230/guestbook-gitops.git
     - name: imageRepo
-      value: docker.io/library/busybox
+      value: mirror.gcr.io/library/busybox
     - name: branch
       value: main
     - name: policyPath
@@ -47,6 +52,7 @@ spec:
         path: ${{ vars.overlayDir }}
         images:
           - image: ${{ vars.imageRepo }}
+            tag: ${{ imageFrom(vars.imageRepo).Tag }}
 
     # Apply the (placeholder) release-marker module. Today: random_id +
     # terraform_data, no cloud creds. When real resources land, add an `env:`
@@ -66,25 +72,23 @@ spec:
         #   - name: AWS_SECRET_ACCESS_KEY
         #     value: ${{ secret('aws-creds').secretAccessKey }}
 
-    # Pull declared outputs out of the apply so downstream steps can use them.
+    # tf-output emits ALL declared outputs by default (no `outputs:` list).
+    # Access them as task.outputs['tf-out'].<name>.value.
     - uses: tf-output
       as: tf-out
       config:
         dir: ${{ vars.tfDir }}
-        outputs:
-          - release_id
 
     # Stamp the release_id into the overlay's release-info-patch.yaml so the
-    # rendered Deployment carries it as the RELEASE_ID env var on the
-    # release-info sidecar. The patch file's shape is stable, so the index
-    # path below stays valid.
+    # rendered Deployment carries it as the RELEASE_ID env var. Note dot-only
+    # path syntax — yaml-update doesn't accept JSONPath bracket indices.
     - uses: yaml-update
       as: stamp-release-id
       config:
         path: ${{ vars.overlayDir }}/release-info-patch.yaml
         updates:
-          - key: spec.template.spec.containers[0].env[0].value
-            value: ${{ task.outputs['tf-out'].release_id }}
+          - key: spec.template.spec.containers.0.env.0.value
+            value: ${{ task.outputs['tf-out'].release_id.value }}
 
     # Render the (now updated) overlay so Kyverno sees the final state.
     - uses: kustomize-build
@@ -130,4 +134,4 @@ spec:
           - kind: Stage
             name: ${{ ctx.stage }}
             values:
-              release_id: ${{ task.outputs['tf-out'].release_id }}
+              release_id: ${{ task.outputs['tf-out'].release_id.value }}

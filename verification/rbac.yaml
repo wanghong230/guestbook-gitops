@@ -1,15 +1,27 @@
-# RBAC for the AnalysisRun Job spawned by `verify-release-echo`. The Job runs
-# in the project namespace (guestbook) but inspects workloads in the per-Stage
-# namespaces (guestbook-dev, guestbook-staging, guestbook-prod), so it needs
-# cross-namespace read access. Hence ClusterRole + ClusterRoleBinding.
+# RBAC for the AnalysisRun Job spawned by `verify-release-echo`. The Job
+# runs in the `akuity` namespace (where the self-hosted Kargo agent
+# materializes AnalysisRuns) and inspects workloads in the per-Stage
+# namespaces (guestbook-dev, guestbook-staging, guestbook-prod), so it
+# needs cluster-wide read access. Hence ClusterRole + ClusterRoleBinding.
+#
+# Two subjects are bound:
+#   - kargo-verify  — the SA we explicitly create for this purpose. Kept for
+#                     when/if the AnalysisTemplate's `serviceAccountName`
+#                     starts being respected by the Kargo verification
+#                     controller.
+#   - default        — currently the SA the AnalysisRun pod actually runs as,
+#                     because the controller doesn't propagate
+#                     `serviceAccountName` from the AnalysisTemplate's pod
+#                     template to the spawned Job pod.
 #
 # If your cluster policy demands per-namespace bindings, replace the single
-# ClusterRoleBinding with three RoleBindings (one in each guestbook-* namespace).
+# ClusterRoleBinding with three RoleBindings (one in each guestbook-*
+# namespace).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kargo-verify
-  namespace: guestbook
+  namespace: akuity
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -30,7 +42,10 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: kargo-verify
-    namespace: guestbook
+    namespace: akuity
+  - kind: ServiceAccount
+    name: default
+    namespace: akuity
 roleRef:
   kind: ClusterRole
   name: kargo-verify-pod-log-reader

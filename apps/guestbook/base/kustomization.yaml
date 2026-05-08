@@ -10,5 +10,5 @@ resources:
 
 # Default image; overlays pin a specific tag, and Kargo updates it on promotion.
 images:
-  - name: docker.io/library/busybox
+  - name: mirror.gcr.io/library/busybox
     newTag: "1.36"

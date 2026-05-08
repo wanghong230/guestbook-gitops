@@ -8,7 +8,7 @@ metadata:
 spec:
   subscriptions:
     - image:
-        repoURL: docker.io/library/busybox
+        repoURL: mirror.gcr.io/library/busybox
         # SemVer captures tags like 1.36, 1.36.1, 1.37 and orders them correctly.
         imageSelectionStrategy: SemVer
         # Strict 3-part semver only — excludes `latest`, `unstable`,

@@ -17,7 +17,5 @@ patches:
     name: guestbook
 # Kargo rewrites `newTag` here on each promotion to staging.
 images:
-- name: docker.io/library/busybox
-  newTag: "1.36"
 - name: mirror.gcr.io/library/busybox
   newTag: 1.37.0

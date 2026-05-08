@@ -33,7 +33,7 @@ spec:
                 serviceAccountName: kargo-verify
                 containers:
                   - name: verify
-                    image: bitnami/kubectl:1.30
+                    image: cgr.dev/chainguard/kubectl:latest-dev
                     command:
                       - /bin/sh
                       - -c
@@ -54,8 +54,8 @@ spec:
                         kubectl -n "${NS}" rollout status deploy/guestbook --timeout=120s
 
                         echo
-                        echo "--- giving busybox one echo cycle to land ---"
-                        sleep 12
+                        echo "--- giving busybox a couple echo cycles to land ---"
+                        sleep 24
 
                         echo
                         echo "--- recent log lines ---"

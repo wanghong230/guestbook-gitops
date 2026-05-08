@@ -16,4 +16,4 @@ spec:
         - name: guestbook
           env:
             - name: RELEASE_ID
-              value: map[sensitive:false type:string value:965b7c3c7f3329bc]
+              value: map[sensitive:false type:string value:1939aa2d8a3db3aa]

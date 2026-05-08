@@ -16,4 +16,4 @@ spec:
         - name: guestbook
           env:
             - name: RELEASE_ID
-              value: afb5c75c7dad2b83
+              value: c4d25d5c365dabeb

@@ -16,4 +16,4 @@ spec:
         - name: guestbook
           env:
             - name: RELEASE_ID
-              value: "unset"
+              value: 1ebda8e216206a69

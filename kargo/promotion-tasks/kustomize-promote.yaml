@@ -1,24 +1,18 @@
-# Reusable promotion task for the guestbook app:
+# Reusable promotion task for the guestbook app, rendered-manifest flavor.
 #
-#   git-clone
-#     → kustomize-set-image            (rewrite the overlay's image tag)
-#     → tf-apply (release-marker)      (real OpenTofu run; produces release_id)
-#     → tf-output                      (capture release_id)
-#     → yaml-update                    (write release_id into release-info-patch)
-#     → kustomize-build                (render manifests for inspection)
-#     → kyverno-validate               (replica-cap policy gate, post-update)
-#     → git-commit
-#     → git-push
-#     → argocd-update
-#     → set-metadata                   (stamp release_id onto the Stage for verification)
+# Two checkouts in one promotion pod:
+#   ./src — source manifests + Kustomize bases/overlays from `main` (READ-ONLY
+#           in practice; we modify files here only in-memory and never commit
+#           ./src back).
+#   ./out — the per-stage rendered branch `stage/${{ ctx.stage }}` (created on
+#           first promotion). Contains a single `manifests.yaml` produced by
+#           `kustomize-build`. This is the ONLY thing we commit and push.
 #
-# `${{ ctx.stage }}` resolves to the name of the Stage that's invoking the
-# task ("dev", "staging", "prod"), driving the overlay path, the policy
-# scoping, and the Argo CD Application name.
+# Argo CD watches `stage/${{ ctx.stage }}`, so each environment has its own
+# branch and dev/staging/prod promotions are fully decoupled on `main`.
 #
-# `task.outputs['tf-out'].release_id.value` — the `.value` is required
-# because tf-output emits Terraform's JSON-output shape:
-#   { release_id: { value: "<hex>", type: "string" } }
+# `${{ ctx.stage }}` resolves to "dev"/"staging"/"prod"; the same task runs
+# unchanged for all three.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: PromotionTask
 metadata:
@@ -30,8 +24,10 @@ spec:
       value: https://github.com/wanghong230/guestbook-gitops.git
     - name: imageRepo
       value: mirror.gcr.io/library/busybox
-    - name: branch
+    - name: srcBranch
       value: main
+    - name: outBranch
+      value: stage/${{ ctx.stage }}
     - name: policyPath
       value: ./src/policies/guestbook-max-replicas.yaml
     - name: tfDir
@@ -39,13 +35,26 @@ spec:
     - name: overlayDir
       value: ./src/apps/guestbook/overlays/${{ ctx.stage }}
   steps:
+    # 1) Two checkouts. ./out gets `create: true` so the stage branch is
+    #    materialized on the first promotion if it doesn't exist yet.
     - uses: git-clone
       config:
         repoURL: ${{ vars.gitRepo }}
         checkout:
-          - branch: ${{ vars.branch }}
+          - branch: ${{ vars.srcBranch }}
             path: ./src
+          - branch: ${{ vars.outBranch }}
+            create: true
+            path: ./out
 
+    # 2) Wipe the stage branch's working tree. The next kustomize-build will
+    #    write the entire deployable state into it, so this guarantees the
+    #    branch contains exactly what we render — nothing leftover.
+    - uses: git-clear
+      config:
+        path: ./out
+
+    # 3) In-memory edit: rewrite the overlay's image tag in ./src.
     - uses: kustomize-set-image
       as: update-image
       config:
@@ -54,9 +63,7 @@ spec:
           - image: ${{ vars.imageRepo }}
             tag: ${{ imageFrom(vars.imageRepo).Tag }}
 
-    # Apply the (placeholder) release-marker module. Today: random_id +
-    # terraform_data, no cloud creds. When real resources land, add an `env:`
-    # block here that pulls credentials via `secret(...)` expressions.
+    # 4) Provision (placeholder) cloud resources, capture release_id.
     - uses: tf-apply
       as: provision
       config:
@@ -66,22 +73,14 @@ spec:
             value: ${{ ctx.stage }}
           - name: image_tag
             value: ${{ imageFrom(vars.imageRepo).Tag }}
-        # env:
-        #   - name: AWS_ACCESS_KEY_ID
-        #     value: ${{ secret('aws-creds').accessKeyId }}
-        #   - name: AWS_SECRET_ACCESS_KEY
-        #     value: ${{ secret('aws-creds').secretAccessKey }}
 
-    # tf-output emits ALL declared outputs by default (no `outputs:` list).
-    # Access them as task.outputs['tf-out'].<name>.value.
     - uses: tf-output
       as: tf-out
       config:
         dir: ${{ vars.tfDir }}
 
-    # Stamp the release_id into the overlay's release-info-patch.yaml so the
-    # rendered Deployment carries it as the RELEASE_ID env var. Note dot-only
-    # path syntax — yaml-update doesn't accept JSONPath bracket indices.
+    # 5) In-memory edit: stamp release_id into the overlay's release-info-patch.
+    #    main's release-info-patch.yaml stays at its "unset" default forever.
     - uses: yaml-update
       as: stamp-release-id
       config:
@@ -90,30 +89,31 @@ spec:
           - key: spec.template.spec.containers.0.env.0.value
             value: ${{ task.outputs['tf-out'].release_id.value }}
 
-    # Render the (now updated) overlay so Kyverno sees the final state.
+    # 6) Render the (in-memory-edited) overlay into ./out/manifests.yaml.
     - uses: kustomize-build
       config:
         path: ${{ vars.overlayDir }}
-        outPath: ./rendered.yaml
+        outPath: ./out/manifests.yaml
 
-    # Fail the promotion if the rendered manifests violate the replica caps.
+    # 7) Validate the FINAL rendered manifests against the replica caps.
     - uses: kyverno-validate
       as: validate-replicas
       config:
         policy: ${{ vars.policyPath }}
-        manifests: ./rendered.yaml
+        manifests: ./out/manifests.yaml
 
+    # 8) Commit + push ONLY the rendered output. main is never written.
     - uses: git-commit
       as: commit
       config:
-        path: ./src
-        # Inside a PromotionTask, prior-step outputs are read from `task.outputs`.
+        path: ./out
         message: ${{ task.outputs['update-image'].commitMessage }}
 
     - uses: git-push
       config:
-        path: ./src
+        path: ./out
 
+    # 9) Tell Argo CD to sync exactly the commit we just pushed.
     - uses: argocd-update
       config:
         apps:
@@ -123,10 +123,7 @@ spec:
               - repoURL: ${{ vars.gitRepo }}
                 desiredRevision: ${{ task.outputs.commit.commit }}
 
-    # Stamp the promoted release_id onto the Stage so the post-deploy
-    # verification (AnalysisTemplate `verify-release-echo`) can pull it back
-    # via `${{ stageMetadata(ctx.stage).release_id }}` and assert the
-    # running Pods are emitting exactly that value.
+    # 10) Stamp release_id onto the Stage so verification.args can read it.
     - uses: set-metadata
       as: stamp-stage
       config:

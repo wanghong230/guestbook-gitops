@@ -1,0 +1,96 @@
+# Apply project-scoped Kargo content to the Akuity-hosted Kargo instance.
+#
+# Argo CD can sync the cluster-scoped pieces (CustomPromotionStep,
+# AnalysisTemplate, RBAC) directly, but Project / Warehouse / Stage /
+# PromotionTask resources live on Kargo's API — not on a cluster Argo CD
+# can reach. This workflow closes that gap by running `kargo apply` from CI
+# whenever those files change on `main`.
+#
+# Required GitHub repo secrets:
+#   AKUITY_API_KEY_ID         — Akuity API key id (Owner role)
+#   AKUITY_API_KEY_SECRET     — Akuity API key secret
+#   AKUITY_ORGANIZATION       — Akuity organization name
+#   KARGO_INSTANCE_URL        — e.g. https://<id>.kargo.akuity.cloud
+#   KARGO_ADMIN_PASSWORD      — admin password for the Kargo instance
+#                               (set via Akuity UI: Kargo → instance →
+#                               Settings → System Accounts → Admin)
+#
+# If your CLI versions differ, adjust the install URLs / login flags and
+# re-run the workflow.
+name: kargo-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kargo/project.yaml'
+      - 'kargo/warehouse.yaml'
+      - 'kargo/promotion-tasks/**'
+      - 'kargo/stages/**'
+      - '.github/workflows/kargo-apply.yml'
+  workflow_dispatch: {}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install akuity CLI
+        run: |
+          set -euo pipefail
+          curl -sSL -o /usr/local/bin/akuity \
+            "https://docs.akuity.io/install/akuity-linux-amd64"
+          chmod +x /usr/local/bin/akuity
+          akuity version || true
+
+      - name: Install kargo CLI
+        run: |
+          set -euo pipefail
+          KARGO_VERSION="$(curl -sSL https://api.github.com/repos/akuity/kargo/releases/latest \
+            | jq -r .tag_name)"
+          curl -sSL -o /usr/local/bin/kargo \
+            "https://github.com/akuity/kargo/releases/download/${KARGO_VERSION}/kargo-linux-amd64"
+          chmod +x /usr/local/bin/kargo
+          kargo version --client || true
+
+      - name: Authenticate to Akuity
+        env:
+          AKUITY_API_KEY_ID: ${{ secrets.AKUITY_API_KEY_ID }}
+          AKUITY_API_KEY_SECRET: ${{ secrets.AKUITY_API_KEY_SECRET }}
+          AKUITY_ORGANIZATION: ${{ secrets.AKUITY_ORGANIZATION }}
+        run: |
+          set -euo pipefail
+          akuity config set system api-url https://api.akuity.io
+          akuity config set organization "$AKUITY_ORGANIZATION"
+          # Subsequent akuity commands authenticate via the API key env vars.
+
+      - name: Login to Kargo
+        env:
+          KARGO_INSTANCE_URL: ${{ secrets.KARGO_INSTANCE_URL }}
+          KARGO_ADMIN_PASSWORD: ${{ secrets.KARGO_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kargo login "$KARGO_INSTANCE_URL" \
+            --admin --password "$KARGO_ADMIN_PASSWORD" \
+            --insecure-skip-tls-verify=false
+
+      - name: Apply Kargo project content
+        run: |
+          set -euo pipefail
+          # Order matters: Project (and its scoped Secret) must exist before
+          # Warehouse/Stages/PromotionTasks reference resources within it.
+          kargo apply -f kargo/project.yaml
+          kargo apply -f kargo/warehouse.yaml
+          kargo apply -f kargo/promotion-tasks/
+          kargo apply -f kargo/stages/
+
+      - name: Verify
+        run: |
+          set -euo pipefail
+          kargo get projects
+          kargo get warehouses    --project guestbook
+          kargo get stages        --project guestbook
+          kargo get promotiontasks --project guestbook || true

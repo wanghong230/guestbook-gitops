@@ -19,8 +19,14 @@ guestbook-gitops/
 │       └── prod/                   # ns: guestbook-prod,    3 replicas
 ├── argocd/
 │   ├── projects/                   # AppProject "guestbook"
-│   ├── clusters/                   # Cluster Secrets for local-nonprod, local-prod
-│   └── applications/               # 3 Argo CD Applications, one per overlay
+│   ├── clusters/                   # Cluster Secrets (skip on Akuity Platform)
+│   └── applications/
+│       ├── 00-app-of-apps.yaml     # Parent — apply once; syncs the rest
+│       ├── 10-custom-steps.yaml    # → kargo/custom-steps/ on local-nonprod
+│       ├── 11-verification.yaml    # → verification/ on local-nonprod
+│       ├── guestbook-dev.yaml      # → stage/dev branch
+│       ├── guestbook-staging.yaml  # → stage/staging branch
+│       └── guestbook-prod.yaml     # → stage/prod branch
 ├── policies/
 │   └── guestbook-max-replicas.yaml # Kyverno ClusterPolicy: dev/staging ≤20, prod ≤100
 ├── terraform/
@@ -28,15 +34,38 @@ guestbook-gitops/
 ├── verification/
 │   ├── analysistemplate-verify-release-echo.yaml  # Argo Rollouts AnalysisTemplate
 │   └── rbac.yaml                                  # SA + ClusterRole + binding for the AT Job
-└── kargo/
-    ├── project.yaml                # Kargo Project + Git creds Secret
-    ├── warehouse.yaml              # Subscribes to image + git
-    ├── custom-steps/               # Cluster-scoped CustomPromotionStep registrations
-    │   └── kyverno-validate.yaml   #   runs `kyverno apply` on rendered manifests
-    ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
-    │   └── kustomize-promote.yaml  #   clone → set-image → tf-apply → tf-output → stamp release_id → build → kyverno → commit → push → sync → set-metadata
-    └── stages/                     # dev → staging → prod (each refs the task + a verification block)
+├── kargo/
+│   ├── project.yaml                # Kargo Project + Git creds Secret
+│   ├── warehouse.yaml              # Subscribes to image + git
+│   ├── custom-steps/               # Cluster-scoped CustomPromotionStep
+│   │   └── kyverno-validate.yaml
+│   ├── promotion-tasks/            # Reusable promotion logic (PromotionTask)
+│   │   └── kustomize-promote.yaml
+│   └── stages/                     # dev → staging → prod
+└── .github/workflows/
+    └── kargo-apply.yml             # CI: kargo apply on push for project content
 ```
+
+## How writes flow (rendered-manifest pattern)
+
+`main` is owned by humans. Kargo never writes back to `main`. Each stage has
+its own branch where Kargo pushes the **fully rendered** Kubernetes YAML:
+
+```
+main                source manifests + Kustomize bases/overlays
+stage/dev           kustomize-build output for dev (one manifests.yaml)
+stage/staging       kustomize-build output for staging
+stage/prod          kustomize-build output for prod
+```
+
+A promotion clones BOTH branches into the same pod (`./src` and `./out`),
+edits `./src` only in-memory, runs `kustomize-build` to write the result
+into `./out/manifests.yaml`, then commits and pushes `./out` only — the
+stage branch — never `main`. So:
+
+- A dev promotion can't accidentally touch staging or prod.
+- `git log stage/prod -p` is your audit log of what's running in prod.
+- Manual edits to `main` no longer race against Kargo's writes.
 
 ## Promotion template
 
@@ -218,35 +247,73 @@ straight from a fresh image to prod.
 
 ## Bootstrap
 
-Replace every `REPLACE_ME` / `REPLACE-WITH-...` placeholder first, then:
+Two control-plane setups happen separately because they target different
+APIs (Akuity Platform doesn't expose a Kubernetes API for Kargo's project
+content):
 
-```bash
-# 1. Argo CD: project, cluster Secrets, Applications
-kubectl apply -f argocd/projects/
-kubectl apply -f argocd/clusters/
-kubectl apply -f argocd/applications/
-
-# 2. Kargo cluster admin (one-time): register the custom step
-kubectl apply -f kargo/custom-steps/
-
-# 3. Kargo project: git creds, warehouse, promotion task, stages
-kubectl apply -f kargo/project.yaml
-kubectl apply -f kargo/warehouse.yaml
-kubectl apply -f kargo/promotion-tasks/
-
-# 4. Verification: AnalysisTemplate + RBAC for the verifier Job
-kubectl apply -f verification/
-
-# 5. Stages reference the AnalysisTemplate, so apply them last
-kubectl apply -f kargo/stages/
+```
+            ┌─ Argo CD (Akuity-managed) ──┐    ┌─ Kargo (Akuity-managed) ─┐
+            │                             │    │                          │
+manifests   │  app-of-apps Application    │    │  Project, Warehouse,     │
+in this    →│  child Applications, one    │    │  PromotionTask, Stages   │
+repo        │  per concern (control-plane │    │  applied via             │
+            │  pieces + per-stage apps)   │    │  `kargo apply`           │
+            └─────────────────────────────┘    └──────────────────────────┘
+                       Argo CD syncs                  CI workflow runs
+                       on every commit                on every commit to
+                       (continuous reconciliation)    paths under kargo/*
 ```
 
-Placeholders to fill:
-- `argocd/clusters/*-secret.yaml` — API server URL, bearer token, CA bundle.
-- `argocd/applications/*.yaml` — `spec.source.repoURL` (your fork of this repo).
-- `kargo/project.yaml` — git PAT under `gitops-repo-creds`, plus `repoURL`.
-- `kargo/warehouse.yaml` and `kargo/promotion-tasks/kustomize-promote.yaml` —
-  `repoURL` defaults (same value across the file).
+### Argo CD side — once, then continuous
+
+```bash
+# Apply the parent Application. From here on, Argo CD owns everything in
+# argocd/applications/ — edits in main propagate automatically.
+argocd app create -f argocd/applications/00-app-of-apps.yaml
+# (or `kubectl apply -f` against the Argo CD control plane if you prefer)
+```
+
+The parent will create:
+
+- `guestbook-custom-steps`  → `kargo/custom-steps/`  on `local-nonprod`
+- `guestbook-verification`  → `verification/`        on `local-nonprod`
+- `guestbook-dev`           → `stage/dev` branch     on `local-nonprod`
+- `guestbook-staging`       → `stage/staging` branch on `local-nonprod`
+- `guestbook-prod`          → `stage/prod` branch    on `local-prod`
+
+### Kargo side — via CI
+
+`.github/workflows/kargo-apply.yml` runs `kargo apply` against your
+Akuity-hosted Kargo instance on every push that touches `kargo/project.yaml`,
+`kargo/warehouse.yaml`, `kargo/stages/`, or `kargo/promotion-tasks/`. Set
+these secrets in the GitHub repo settings before the first push:
+
+- `AKUITY_API_KEY_ID`, `AKUITY_API_KEY_SECRET` — Owner-role API key.
+- `AKUITY_ORGANIZATION` — your Akuity org name.
+- `KARGO_INSTANCE_URL` — `https://<id>.kargo.akuity.cloud`.
+- `KARGO_ADMIN_PASSWORD` — admin password set via Akuity UI.
+
+To apply manually without a push, trigger the workflow from the Actions
+tab (`Run workflow` button on `kargo-apply`).
+
+### Placeholders to fill before first run
+
+- `kargo/project.yaml` — replace the `gitops-repo-creds` username/password
+  with a real GitHub PAT. **Don't commit it**: only inject the live value at
+  apply time, or move the Secret out of git entirely and create it via
+  `kargo create credentials …` from your terminal.
+- `argocd/clusters/*-secret.yaml` — only relevant if you self-host Argo CD.
+  On Akuity Platform, `akuity argocd cluster create …` handles registration
+  and these placeholder Secrets are unused.
+- `argocd/applications/*.yaml` — `spec.source.repoURL` if you forked.
+
+### First promotion creates the stage branches
+
+The PromotionTask's `git-clone` uses `create: true` for the stage branch.
+On the very first promotion to dev/staging/prod, the `stage/<env>` branch
+is created from an empty working tree, populated with `manifests.yaml`, and
+pushed. From then on each promotion is a fast-forward commit on the
+existing branch.
 
 ## Testing the manifests locally
 
@@ -271,9 +338,10 @@ cd -
 
 ## Notes
 
-- Overlays pin `mirror.gcr.io/library/busybox:1.36` as a starting point.
-  Kargo rewrites `images[0].newTag` on each promotion, so the in-tree value
-  drifts to the most recently promoted tag for each environment.
+- Overlays pin `mirror.gcr.io/library/busybox:1.36` as a stable default.
+  With the rendered-manifest pattern Kargo no longer rewrites `newTag` in
+  `main`; the actual deployed tag lives in each `stage/<env>` branch's
+  `manifests.yaml`.
 - The `Service` is nominal — busybox doesn't actually serve HTTP, so its
   endpoints will be empty. Swap to a real server image (or add an `httpd
   -f -p 80` sidecar) if you need a working ClusterIP.

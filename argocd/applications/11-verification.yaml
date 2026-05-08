@@ -1,0 +1,31 @@
+# Syncs the AnalysisTemplate + RBAC bits the AnalysisRun Job needs. Lives on
+# the same cluster as the self-hosted Kargo agent (local-nonprod).
+#
+# - AnalysisTemplate `verify-release-echo` (namespaced: guestbook)
+# - ServiceAccount kargo-verify (namespaced: akuity)
+# - ClusterRole + ClusterRoleBinding (cluster-scoped)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-verification
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: guestbook
+  source:
+    repoURL: https://github.com/wanghong230/guestbook-gitops.git
+    targetRevision: main
+    path: verification
+  destination:
+    name: local-nonprod
+    # Resources carry their own namespaces; this is a default for any
+    # namespaced resource that doesn't set one.
+    namespace: akuity
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

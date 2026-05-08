@@ -2,9 +2,14 @@
 # strategic-merge merges env entries by `name`, so this replaces the base's
 # RELEASE_ID default without affecting any other env vars.
 #
-# Kargo rewrites the value below on every promotion via the `yaml-update`
-# step. The path of the value is `spec.template.spec.containers[0].env[0].value`
-# — keep this file's shape stable so that index stays valid.
+# This file is now a stable developer-managed default — Kargo writes to
+# `stage/${{ ctx.stage }}` branches (rendered manifests), not back to main,
+# so the value below stays at "unset" and the per-promotion release_id only
+# appears in the rendered output on the corresponding stage branch.
+#
+# The `yaml-update` step in the PromotionTask still rewrites this file
+# in-memory (in ./src) so the kustomize-build that follows picks up the new
+# env value; the modified file is never committed back.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,4 +21,4 @@ spec:
         - name: guestbook
           env:
             - name: RELEASE_ID
-              value: 8356144d7c2bee22
+              value: "unset"

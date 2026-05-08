@@ -1,0 +1,27 @@
+# Syncs cluster-scoped Kargo CustomPromotionStep registrations to the cluster
+# where the self-hosted Kargo agent runs (local-nonprod). This is what makes
+# `kyverno-validate` (and any future custom step) usable from PromotionTasks.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-custom-steps
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: guestbook
+  source:
+    repoURL: https://github.com/wanghong230/guestbook-gitops.git
+    targetRevision: main
+    path: kargo/custom-steps
+  destination:
+    name: local-nonprod
+    # CustomPromotionStep is cluster-scoped; namespace is ignored at apply
+    # time but Argo CD requires the field to be set.
+    namespace: kargo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

@@ -11,8 +11,8 @@ spec:
   project: guestbook
   source:
     repoURL: https://github.com/wanghong230/guestbook-gitops.git
-    targetRevision: main
-    path: apps/guestbook/overlays/staging
+    targetRevision: stage/staging
+    path: .
   destination:
     name: local-nonprod
     namespace: guestbook-staging

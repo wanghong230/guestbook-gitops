@@ -10,10 +10,12 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: guestbook
+  # Watches the per-stage rendered branch — Kargo's dev promotion is the only
+  # writer of stage/dev, so dev/staging/prod no longer touch each other.
   source:
     repoURL: https://github.com/wanghong230/guestbook-gitops.git
-    targetRevision: main
-    path: apps/guestbook/overlays/dev
+    targetRevision: stage/dev
+    path: .
   destination:
     name: local-nonprod
     namespace: guestbook-dev

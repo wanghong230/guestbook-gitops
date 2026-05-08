@@ -1,0 +1,40 @@
+# Parent Application — apply this ONCE (with `argocd app create -f` or
+# `kubectl apply` against the Argo CD control plane). It then syncs every
+# other Application in this directory automatically.
+#
+# Bootstrap:
+#
+#   argocd app create -f argocd/applications/00-app-of-apps.yaml
+#   # or:
+#   kubectl apply -f argocd/applications/00-app-of-apps.yaml
+#
+# Pruning here intentionally OMITS prune: app-of-apps deletions should be a
+# deliberate human action, not an accidental side-effect of removing a file.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-app-of-apps
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: guestbook
+  source:
+    repoURL: https://github.com/wanghong230/guestbook-gitops.git
+    targetRevision: main
+    path: argocd/applications
+    directory:
+      recurse: false
+      # Don't sync ourselves — Argo CD updates this Application via its own
+      # `kubectl apply` lifecycle, not via app-of-apps.
+      exclude: '00-app-of-apps.yaml'
+  destination:
+    # The Argo CD control plane's own cluster. For Akuity-managed Argo CD this
+    # resolves to the Akuity cluster; for self-hosted it's `in-cluster`.
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
